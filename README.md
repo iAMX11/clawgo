@@ -1,3 +1,5 @@
+![Clawgo banner](docs/assets/readme-banner.jpg)
+
 # Clawgo (Go Node)
 
 Minimal headless node client for Raspberry Pi / Linux. Connects to the gateway bridge, handles pairing, streams `voice.transcript` events (stdin/FIFO), subscribes to chat, and can speak responses via local TTS.
