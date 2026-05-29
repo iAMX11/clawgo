@@ -42,8 +42,12 @@ func (q *Queue) Enqueue(task Task) bool {
 	if q.closed {
 		return false
 	}
-	q.ch <- task
-	return true
+	select {
+	case q.ch <- task:
+		return true
+	default:
+		return false
+	}
 }
 
 func (q *Queue) Close() {

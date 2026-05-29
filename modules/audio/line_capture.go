@@ -60,6 +60,10 @@ func (c *LineCapture) Close() error { return nil }
 
 func (c *LineCapture) readReader(ctx context.Context, r io.Reader, out chan<- Frame) {
 	defer close(out)
+	c.scanReader(ctx, r, out)
+}
+
+func (c *LineCapture) scanReader(ctx context.Context, r io.Reader, out chan<- Frame) {
 	if r == nil {
 		return
 	}
@@ -88,22 +92,98 @@ func (c *LineCapture) readPathLoop(ctx context.Context, out chan<- Frame) {
 	if path == "" {
 		return
 	}
+
+	var lastInfo os.FileInfo
+	var lastModTime time.Time
+	var lastOffset int64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+
+		info, err := os.Stat(path)
+		if err != nil {
+			if c.logf != nil {
+				c.logf("capture stat failed: %v", err)
+			}
+			if !sleepWithContext(ctx, 500*time.Millisecond) {
+				return
+			}
+			continue
+		}
+
+		isPipe := info.Mode()&os.ModeNamedPipe != 0
+		sameFile := !isPipe && lastInfo != nil && os.SameFile(info, lastInfo)
+		if sameFile && !lastModTime.IsZero() && info.ModTime().Equal(lastModTime) && info.Size() == lastOffset {
+			if !sleepWithContext(ctx, 200*time.Millisecond) {
+				return
+			}
+			continue
+		}
+
+		readOffset := int64(0)
+		if sameFile && info.Size() > lastOffset {
+			readOffset = lastOffset
+		}
+
 		f, err := os.Open(path)
 		if err != nil {
 			if c.logf != nil {
 				c.logf("capture open failed: %v", err)
 			}
-			time.Sleep(500 * time.Millisecond)
+			if !sleepWithContext(ctx, 500*time.Millisecond) {
+				return
+			}
 			continue
 		}
-		c.readReader(ctx, f, out)
+		if readOffset > 0 {
+			if _, err := f.Seek(readOffset, io.SeekStart); err != nil {
+				if c.logf != nil {
+					c.logf("capture seek failed: %v", err)
+				}
+				_ = f.Close()
+				if !sleepWithContext(ctx, 500*time.Millisecond) {
+					return
+				}
+				continue
+			}
+		}
+
+		c.scanReader(ctx, f, out)
+		consumedOffset := info.Size()
+		if !isPipe {
+			if offset, err := f.Seek(0, io.SeekCurrent); err == nil {
+				consumedOffset = offset
+			}
+		}
+		finalInfo, _ := f.Stat()
 		_ = f.Close()
-		time.Sleep(200 * time.Millisecond)
+		if !isPipe {
+			lastInfo = info
+			lastOffset = consumedOffset
+			lastModTime = time.Time{}
+			if finalInfo != nil && finalInfo.Size() == consumedOffset {
+				lastModTime = finalInfo.ModTime()
+			} else if info.Size() == consumedOffset {
+				lastModTime = info.ModTime()
+			}
+		}
+
+		if !sleepWithContext(ctx, 200*time.Millisecond) {
+			return
+		}
+	}
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
